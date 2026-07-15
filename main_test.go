@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -548,8 +550,9 @@ func TestFoundryAdapterRejectsOversizedBrokeredResultBeforeSubmission(t *testing
 			Output:   oversized,
 		}},
 	})
-	if err == nil || !strings.Contains(err.Error(), "exceeds adapter limit") {
-		t.Fatalf("ContinueTurn() error = %v, want frame size rejection", err)
+	var clientErr harness.ClientError
+	if err == nil || !errors.As(err, &clientErr) || clientErr.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("ContinueTurn() error = %v, want status %d", err, http.StatusRequestEntityTooLarge)
 	}
 	if foundry.submittedToolOutput.Load() != 0 {
 		t.Fatalf("submitted tool outputs = %d, want 0", foundry.submittedToolOutput.Load())
@@ -621,5 +624,49 @@ func TestFoundryAdapterWaitsForCancellationTerminalStatus(t *testing.T) {
 	}
 	if foundry.cancelPolls.Load() < 2 {
 		t.Fatalf("cancel polls = %d, want cancellation confirmation polling", foundry.cancelPolls.Load())
+	}
+}
+
+func TestAppendFailedPreservesLocalDiagnostic(t *testing.T) {
+	s := &server{}
+	turn := &turnState{request: foundryStartTurnRequest("local-failure")}
+	s.appendFailed(turn, "local_limit", "completion exceeded local limit")
+	failed := findFrame(turn.frames, harness.FrameTurnFailed)
+	if failed == nil || failed.Failed == nil || failed.Failed.Message != "completion exceeded local limit" {
+		t.Fatalf("failed frame = %#v, want local diagnostic", failed)
+	}
+}
+
+func TestStartTurnPreservesLocalValidationDiagnostic(t *testing.T) {
+	foundry := newFakeFoundry(t, foundryStatusCompleted)
+	adapter := newTestFoundryAdapter(foundry.URL)
+	defer adapter.Close()
+	request := foundryStartTurnRequest("local-validation")
+	request.ToolExecutionMode = harness.ToolExecutionModeBrokered
+	request.Input.Tools = []harness.ToolDefinition{{
+		Name:          "delegate_task",
+		BrokeredClass: harness.BrokeredToolClassCoordination,
+		Parameters:    json.RawMessage(`{"type":"object"}`),
+	}}
+	payload, err := json.Marshal(request)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	httpRequest, err := http.NewRequest(http.MethodPost, adapter.URL+harness.TurnsPath, bytes.NewReader(payload))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	httpRequest.Header.Set("Authorization", "Bearer adapter-token")
+	response, err := http.DefaultClient.Do(httpRequest)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer response.Body.Close() //nolint:errcheck
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if !strings.Contains(string(body), "unsupported Foundry brokered tool class") {
+		t.Fatalf("response body = %q, want actionable local validation", body)
 	}
 }

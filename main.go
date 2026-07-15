@@ -149,6 +149,28 @@ type fatalFoundryPollError struct {
 func (e fatalFoundryPollError) Error() string { return e.err.Error() }
 func (e fatalFoundryPollError) Unwrap() error { return e.err }
 
+type opaqueProviderError struct {
+	err error
+}
+
+func (e opaqueProviderError) Error() string { return e.err.Error() }
+func (e opaqueProviderError) Unwrap() error { return e.err }
+
+func markOpaqueProviderError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return opaqueProviderError{err: err}
+}
+
+func adapterErrorMessage(err error) string {
+	var opaque opaqueProviderError
+	if errors.As(err, &opaque) {
+		return sanitize.Text(err.Error())
+	}
+	return err.Error()
+}
+
 const foundryEndpointRequirement = "foundry endpoint must use https " +
 	"(http allowed only for loopback) and must not include credentials, query, or fragment"
 
@@ -349,7 +371,7 @@ func (s *server) startTurn(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	if err := s.ensureFoundryRun(backendCtx, turn); err != nil {
 		s.completeTurnInitialization(turn, err)
-		harness.WriteError(w, http.StatusBadGateway, err.Error())
+		harness.WriteError(w, http.StatusBadGateway, adapterErrorMessage(err))
 		return
 	}
 	s.completeTurnInitialization(turn, nil)
@@ -370,7 +392,7 @@ func (s *server) waitTurnInitialized(ctx context.Context, w http.ResponseWriter,
 	select {
 	case <-turn.initDone:
 		if turn.initErr != nil {
-			harness.WriteError(w, http.StatusBadGateway, turn.initErr.Error())
+			harness.WriteError(w, http.StatusBadGateway, adapterErrorMessage(turn.initErr))
 			return false
 		}
 		return true
@@ -462,8 +484,10 @@ func (s *server) streamEvents(w http.ResponseWriter, r *http.Request, turn *turn
 	if !completed {
 		if err := s.pollFoundry(ctx, turn); err != nil && ctx.Err() == nil {
 			var fatal fatalFoundryPollError
-			if errors.As(err, &fatal) || s.recordPollFailure(turn) >= maxFoundryPollFailures {
-				s.cancelAndFailFoundryTurn(ctx, turn, "foundry_poll_failed", err.Error())
+			isFatal := errors.As(err, &fatal)
+			if isFatal || s.recordPollFailure(turn) >= maxFoundryPollFailures {
+				message := adapterErrorMessage(err)
+				s.cancelAndFailFoundryTurn(ctx, turn, "foundry_poll_failed", message)
 			}
 		}
 		s.mu.Lock()
@@ -515,7 +539,7 @@ func (s *server) continueTurn(w http.ResponseWriter, r *http.Request, turn *turn
 	}
 	if len(resultsToSubmit) > 0 {
 		if err := s.submitToolOutputs(r.Context(), turn, resultsToSubmit); err != nil {
-			harness.WriteError(w, http.StatusBadGateway, err.Error())
+			harness.WriteError(w, http.StatusBadGateway, adapterErrorMessage(err))
 			return
 		}
 	}
@@ -574,7 +598,7 @@ func (s *server) cancelTurn(w http.ResponseWriter, r *http.Request, turn *turnSt
 	}
 	s.mu.Unlock()
 	if err := s.cancelFoundryRun(r.Context(), turn); err != nil {
-		harness.WriteError(w, http.StatusBadGateway, sanitize.Text(err.Error()))
+		harness.WriteError(w, http.StatusBadGateway, adapterErrorMessage(err))
 		return
 	}
 	s.mu.Lock()
@@ -691,12 +715,14 @@ func (s *server) pollFoundry(ctx context.Context, turn *turnState) error {
 				if !turnAllowsFoundryTool(turn.request, call.Function.Name) {
 					s.mu.Unlock()
 					return fatalFoundryPollError{
-						err: fmt.Errorf("foundry requested tool %q that is not exposed for this turn", call.Function.Name),
+						err: markOpaqueProviderError(
+							fmt.Errorf("foundry requested tool %q that is not exposed for this turn", call.Function.Name),
+						),
 					}
 				}
 				if !foundryToolAllowed(turn.request.Input.Tools, call.Function.Name) {
 					s.mu.Unlock()
-					return fmt.Errorf("foundry requested unapproved tool %q", call.Function.Name)
+					return markOpaqueProviderError(fmt.Errorf("foundry requested unapproved tool %q", call.Function.Name))
 				}
 				if _, done := turn.submittedTools[call.ID]; done {
 					continue
@@ -763,7 +789,7 @@ func (s *server) pollFoundry(ctx context.Context, turn *turnState) error {
 		case "failed", "expired", "incomplete":
 			msg := run.Status
 			if run.LastError != nil && run.LastError.Message != "" {
-				msg = run.LastError.Message
+				msg = sanitize.Text(run.LastError.Message)
 			}
 			s.appendFailed(turn, "foundry_"+run.Status, msg)
 			return nil
@@ -851,7 +877,7 @@ func (s *server) cancelAndFailFoundryTurn(
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), foundryCancelTimeout)
 	defer cancel()
 	if err := s.cancelFoundryRun(ctx, turn); err != nil {
-		message += "; cancellation failed: " + sanitize.Text(err.Error())
+		message += "; cancellation failed: " + adapterErrorMessage(err)
 	}
 	s.appendFailed(turn, reason, message)
 }
@@ -861,7 +887,7 @@ func (s *server) expireFoundryTurn(turn *turnState) {
 	defer cancel()
 	message := "foundry run exceeded its polling deadline"
 	if err := s.cancelFoundryRun(ctx, turn); err != nil {
-		message += "; cancellation failed: " + sanitize.Text(err.Error())
+		message += "; cancellation failed: " + adapterErrorMessage(err)
 	}
 	s.appendFailed(turn, "foundry_poll_timeout", message)
 }
@@ -979,7 +1005,9 @@ func (s *server) fetchFinalMessage(ctx context.Context, turn *turnState) (string
 		}
 	}
 	return "", fatalFoundryPollError{
-		err: fmt.Errorf("foundry run completed without assistant message for run %s", turn.runID),
+		err: markOpaqueProviderError(
+			fmt.Errorf("foundry run completed without assistant message for run %s", turn.runID),
+		),
 	}
 }
 
@@ -1014,20 +1042,24 @@ func (s *server) doJSON(ctx context.Context, method, path string, body any, out 
 	}
 	accessToken, err := s.tokenProvider.AccessToken(ctx)
 	if err != nil {
-		return err
+		return markOpaqueProviderError(err)
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return err
+		return markOpaqueProviderError(err)
 	}
 	defer resp.Body.Close() //nolint:errcheck
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("foundry %s %s failed: HTTP %d: %s", method, path, resp.StatusCode, strings.TrimSpace(string(data)))
+		return markOpaqueProviderError(
+			fmt.Errorf("foundry %s %s failed: HTTP %d: %s", method, path, resp.StatusCode, strings.TrimSpace(string(data))),
+		)
 	}
 	if out != nil {
-		return json.NewDecoder(resp.Body).Decode(out)
+		if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+			return markOpaqueProviderError(err)
+		}
 	}
 	return nil
 }
@@ -1051,7 +1083,6 @@ func (s *server) foundryURL(path string) (string, error) {
 }
 
 func (s *server) appendFailed(turn *turnState, reason, msg string) {
-	msg = sanitize.Text(msg)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if turn.completed {
@@ -1108,7 +1139,7 @@ func (s *server) cleanupExpiredFoundryThreads(now time.Time) {
 		cancel()
 		if err != nil {
 			retry = true
-			log.Printf("failed to delete expired Foundry thread: %s", sanitize.Text(err.Error()))
+			log.Printf("failed to delete expired Foundry thread: %s", adapterErrorMessage(err))
 			continue
 		}
 		s.mu.Lock()

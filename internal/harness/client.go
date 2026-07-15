@@ -87,7 +87,7 @@ func (c *Client) Health(ctx context.Context) (*HealthResponse, error) {
 		return nil, err
 	}
 	if err := response.Validate(); err != nil {
-		return nil, safeClientError("health", 0, err.Error())
+		return nil, sanitizedClientError("health", 0, err.Error())
 	}
 	return &response, nil
 }
@@ -98,7 +98,7 @@ func (c *Client) Capabilities(ctx context.Context) (*CapabilitiesResponse, error
 		return nil, err
 	}
 	if err := response.Validate(); err != nil {
-		return nil, safeClientError("capabilities", 0, err.Error())
+		return nil, sanitizedClientError("capabilities", 0, err.Error())
 	}
 	return &response, nil
 }
@@ -112,13 +112,13 @@ func (c *Client) StartTurn(ctx context.Context, request StartTurnRequest) (*Star
 		return nil, err
 	}
 	if strings.TrimSpace(response.Version) != ProtocolVersion {
-		return nil, safeClientError("start_turn", 0, fmt.Sprintf("unsupported version %q", response.Version))
+		return nil, sanitizedClientError("start_turn", 0, fmt.Sprintf("unsupported version %q", response.Version))
 	}
 	if !response.Accepted {
-		return nil, safeClientError("start_turn", 0, "harness did not accept turn")
+		return nil, sanitizedClientError("start_turn", 0, "harness did not accept turn")
 	}
 	if err := validateAcceptedTurn(request, response); err != nil {
-		return nil, safeClientError("start_turn", 0, err.Error())
+		return nil, sanitizedClientError("start_turn", 0, err.Error())
 	}
 	return &response, nil
 }
@@ -136,23 +136,23 @@ func (c *Client) CancelTurn(ctx context.Context, request CancelTurnRequest) (*Ca
 		return nil, err
 	}
 	if strings.TrimSpace(response.Version) != ProtocolVersion {
-		return nil, safeClientError("cancel_turn", 0, fmt.Sprintf("unsupported version %q", response.Version))
+		return nil, sanitizedClientError("cancel_turn", 0, fmt.Sprintf("unsupported version %q", response.Version))
 	}
 	if !response.Accepted {
-		return nil, safeClientError("cancel_turn", 0, "harness did not accept cancellation")
+		return nil, sanitizedClientError("cancel_turn", 0, "harness did not accept cancellation")
 	}
 	if response.RuntimeSessionID != request.RuntimeSessionID {
-		return nil, safeClientError(
+		return nil, sanitizedClientError(
 			"cancel_turn",
 			0,
 			fmt.Sprintf("harness cancelled runtime session %q, want %q", response.RuntimeSessionID, request.RuntimeSessionID),
 		)
 	}
 	if response.TurnID != request.TurnID {
-		return nil, safeClientError("cancel_turn", 0, fmt.Sprintf("harness cancelled turn %q, want %q", response.TurnID, request.TurnID))
+		return nil, sanitizedClientError("cancel_turn", 0, fmt.Sprintf("harness cancelled turn %q, want %q", response.TurnID, request.TurnID))
 	}
 	if response.CorrelationID != "" && response.CorrelationID != request.CorrelationID {
-		return nil, safeClientError(
+		return nil, sanitizedClientError(
 			"cancel_turn",
 			0,
 			fmt.Sprintf("harness cancelled correlation id %q, want %q", response.CorrelationID, request.CorrelationID),
@@ -174,7 +174,7 @@ func (c *Client) ContinueTurn(ctx context.Context, request ContinueTurnRequest) 
 		return nil, err
 	}
 	if err := response.ValidateFor(request); err != nil {
-		return nil, safeClientError("continue_turn", 0, err.Error())
+		return nil, sanitizedClientError("continue_turn", 0, err.Error())
 	}
 	return &response, nil
 }
@@ -201,7 +201,7 @@ func (c *Client) FetchTurnOutput(ctx context.Context, turnID HarnessTurnID, outp
 	c.setAuthHeader(req)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, safeClientError("fetch_turn_output", 0, err.Error())
+		return nil, sanitizedClientError("fetch_turn_output", 0, err.Error())
 	}
 	defer resp.Body.Close() //nolint:errcheck
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -209,7 +209,7 @@ func (c *Client) FetchTurnOutput(ctx context.Context, turnID HarnessTurnID, outp
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxFetchTurnOutputBytes+1))
 	if err != nil {
-		return nil, safeClientError("fetch_turn_output", resp.StatusCode, err.Error())
+		return nil, sanitizedClientError("fetch_turn_output", resp.StatusCode, err.Error())
 	}
 	if len(data) > maxFetchTurnOutputBytes {
 		return nil, safeClientError("fetch_turn_output", resp.StatusCode, "output exceeds harness fetch limit")
@@ -239,7 +239,7 @@ func (c *Client) StreamFrames(ctx context.Context, turnID HarnessTurnID, afterSe
 	c.setAuthHeader(req)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return safeClientError("stream_frames", 0, err.Error())
+		return sanitizedClientError("stream_frames", 0, err.Error())
 	}
 	defer resp.Body.Close() //nolint:errcheck
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -259,7 +259,7 @@ func (c *Client) getJSON(ctx context.Context, rel string, out any) error {
 	c.setAuthHeader(req)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return safeClientError("get", 0, err.Error())
+		return sanitizedClientError("get", 0, err.Error())
 	}
 	defer resp.Body.Close() //nolint:errcheck
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -284,7 +284,7 @@ func (c *Client) postJSON(ctx context.Context, rel string, in, out any) error {
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return safeClientError("post", 0, err.Error())
+		return sanitizedClientError("post", 0, err.Error())
 	}
 	defer resp.Body.Close() //nolint:errcheck
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -296,7 +296,7 @@ func (c *Client) postJSON(ctx context.Context, rel string, in, out any) error {
 func decodeBoundedJSON(op string, status int, body io.Reader, out any) error {
 	data, err := io.ReadAll(io.LimitReader(body, maxHarnessControlResponseBytes+1))
 	if err != nil {
-		return safeClientError(op, status, err.Error())
+		return sanitizedClientError(op, status, err.Error())
 	}
 	if len(data) > maxHarnessControlResponseBytes {
 		return safeClientError(op, status, "JSON response exceeds harness control limit")
@@ -305,7 +305,7 @@ func decodeBoundedJSON(op string, status int, body io.Reader, out any) error {
 		return nil
 	}
 	if err := json.Unmarshal(data, out); err != nil {
-		return safeClientError(op, status, err.Error())
+		return sanitizedClientError(op, status, err.Error())
 	}
 	return nil
 }
@@ -330,7 +330,7 @@ func (c *Client) statusError(op string, resp *http.Response) error {
 	if message == "" {
 		message = resp.Status
 	}
-	return safeClientError(op, resp.StatusCode, message)
+	return sanitizedClientError(op, resp.StatusCode, message)
 }
 
 func (c *Client) resolve(rel string) *url.URL {
@@ -375,7 +375,10 @@ func readSSEFrames(r io.Reader, emit func(HarnessEventFrame) error) error {
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return safeClientError("stream_frames", 0, err.Error())
+		if strings.Contains(err.Error(), "token too long") {
+			return safeClientError("stream_frames", 0, "SSE line exceeds harness frame limit")
+		}
+		return sanitizedClientError("stream_frames", 0, err.Error())
 	}
 	if data.Len() > 0 {
 		if err := emitSSEData(data.String(), emit); err != nil {
@@ -413,7 +416,7 @@ func emitSSEData(raw string, emit func(HarnessEventFrame) error) error {
 	}
 	var frame HarnessEventFrame
 	if err := json.Unmarshal([]byte(raw), &frame); err != nil {
-		return safeClientError("stream_frames", 0, fmt.Sprintf("decode harness frame: %v", err))
+		return sanitizedClientError("stream_frames", 0, fmt.Sprintf("decode harness frame: %v", err))
 	}
 	if err := emit(frame); err != nil {
 		return err
@@ -435,5 +438,9 @@ func (e ClientError) Error() string {
 }
 
 func safeClientError(op string, status int, message string) error {
+	return ClientError{Op: op, StatusCode: status, Message: strings.TrimSpace(message)}
+}
+
+func sanitizedClientError(op string, status int, message string) error {
 	return ClientError{Op: op, StatusCode: status, Message: sanitize.Text(message)}
 }

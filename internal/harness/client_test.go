@@ -2,6 +2,7 @@ package harness
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -53,8 +54,8 @@ func TestClientStartTurnMismatchedResponseIsError(t *testing.T) {
 		Deadline:         time.Now().UTC().Add(time.Minute),
 		AuthIdentity:     AuthIdentity{Subject: "user:test"},
 	})
-	if err == nil || !strings.Contains(err.Error(), "runtime session") {
-		t.Fatalf("StartTurn() error = %v, want identity mismatch", err)
+	if err == nil || !strings.Contains(err.Error(), "[REDACTED]") {
+		t.Fatalf("StartTurn() error = %v, want sanitized response mismatch", err)
 	}
 }
 
@@ -95,8 +96,8 @@ func TestClientCancelTurnMismatchedResponseIsError(t *testing.T) {
 		TurnID:           "turn-a",
 		CorrelationID:    "corr-a",
 	})
-	if err == nil || !strings.Contains(err.Error(), "runtime session") {
-		t.Fatalf("CancelTurn() error = %v, want identity mismatch", err)
+	if err == nil || !strings.Contains(err.Error(), "[REDACTED]") {
+		t.Fatalf("CancelTurn() error = %v, want sanitized response mismatch", err)
 	}
 }
 
@@ -122,8 +123,8 @@ func TestClientCancelTurnRejectedResponseIsError(t *testing.T) {
 		TurnID:           "turn-a",
 		CorrelationID:    "corr-a",
 	})
-	if err == nil || !strings.Contains(err.Error(), "did not accept cancellation") {
-		t.Fatalf("CancelTurn() error = %v, want rejected cancellation", err)
+	if err == nil || !strings.Contains(err.Error(), "[REDACTED]") {
+		t.Fatalf("CancelTurn() error = %v, want sanitized rejected response", err)
 	}
 }
 
@@ -201,8 +202,8 @@ func TestClientContinueTurnMismatchedResponseIsError(t *testing.T) {
 			Output:           []byte(`{"success":true}`),
 		}},
 	})
-	if err == nil || !strings.Contains(err.Error(), "runtime session") {
-		t.Fatalf("ContinueTurn() error = %v, want identity mismatch", err)
+	if err == nil || !strings.Contains(err.Error(), "[REDACTED]") {
+		t.Fatalf("ContinueTurn() error = %v, want sanitized response mismatch", err)
 	}
 }
 
@@ -421,5 +422,25 @@ func TestReadSSEFramesDoesNotEmitBufferedDataAfterScannerFailure(t *testing.T) {
 	}
 	if emitted {
 		t.Fatal("readSSEFrames() emitted a partial event after scanner failure")
+	}
+}
+
+type errorRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f errorRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
+
+func TestClientSanitizesRoundTripErrors(t *testing.T) {
+	httpClient := &http.Client{Transport: errorRoundTripper(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("Authorization: Bearer opaque-value")
+	})}
+	client, err := NewClient("https://runtime.example", WithHTTPClient(httpClient))
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	_, err = client.Health(context.Background())
+	if err == nil || strings.Contains(err.Error(), "opaque-value") || !strings.Contains(err.Error(), "[REDACTED]") {
+		t.Fatalf("Health() error = %v, want sanitized transport error", err)
 	}
 }
