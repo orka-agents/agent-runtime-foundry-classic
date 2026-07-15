@@ -1,0 +1,4 @@
+This repository was extracted from github.com/orka-agents/orka.
+
+The original Foundry adapter implementation was introduced in Orka commit
+5e3e9d3c07b1ac34ac4efe731446984aae385d9b under the MIT License.
