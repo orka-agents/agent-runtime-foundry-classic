@@ -538,6 +538,9 @@ func (r CapabilitiesResponse) Validate() error {
 	if len(r.BrokeredToolClasses) > 0 && !containsToolExecutionMode(r.ToolExecutionModes, ToolExecutionModeBrokered) {
 		return fmt.Errorf("brokeredToolClasses require tool execution mode %q", ToolExecutionModeBrokered)
 	}
+	if containsToolExecutionMode(r.ToolExecutionModes, ToolExecutionModeBrokered) && len(r.BrokeredToolClasses) == 0 {
+		return fmt.Errorf("brokered tool execution mode requires at least one brokeredToolClass")
+	}
 	if containsToolExecutionMode(r.ToolExecutionModes, ToolExecutionModeBrokered) && !r.SupportsContinuation {
 		return fmt.Errorf("brokered tool execution mode requires supportsContinuation")
 	}

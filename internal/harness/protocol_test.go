@@ -285,3 +285,18 @@ func TestContinueTurnRequestRejectsDuplicateAndNonCanonicalToolResults(t *testin
 		t.Fatalf("ContinueTurnRequest Validate() = %v, want canonical key rejection", err)
 	}
 }
+
+func TestCapabilitiesBrokeredModeRequiresToolClass(t *testing.T) {
+	capabilities := CapabilitiesResponse{
+		Version:              ProtocolVersion,
+		ProtocolVersion:      ProtocolVersion,
+		Transport:            HTTPTransport,
+		RuntimeName:          "brokered-runtime",
+		ProviderKind:         ProviderKindRemote,
+		ToolExecutionModes:   []ToolExecutionMode{ToolExecutionModeBrokered},
+		SupportsContinuation: true,
+	}
+	if err := capabilities.Validate(); err == nil || !strings.Contains(err.Error(), "brokeredToolClass") {
+		t.Fatalf("Capabilities Validate() = %v, want brokered class requirement", err)
+	}
+}
